@@ -1,0 +1,4 @@
+What does the "N" in NIO stand for?|New|Network|Native|Nested|0
+Which class multiplexes many channels on one thread?|Socket|Selector|Thread|Buffer|1
+Which method switches a ByteBuffer from writing to reading?|clear|rewind|flip|mark|2
+Default transport protocol that guarantees ordered delivery?|UDP|TCP|ICMP|ARP|1
