@@ -1,4 +1,14 @@
-What does the "N" in NIO stand for?|New|Network|Native|Nested|0
-Which class multiplexes many channels on one thread?|Socket|Selector|Thread|Buffer|1
-Which method switches a ByteBuffer from writing to reading?|clear|rewind|flip|mark|2
-Default transport protocol that guarantees ordered delivery?|UDP|TCP|ICMP|ARP|1
+# BrainBrawl Question Bank
+# Format: id|text|optA|optB|optC|optD|correctIndex|timeLimitSec
+# correctIndex: 0=A  1=B  2=C  3=D
+
+q01|What is the capital of France?|Berlin|London|Paris|Rome|2|12
+q02|How many sides does a hexagon have?|4|5|6|8|2|10
+q03|Which element has the chemical symbol Au?|Argon|Arsenic|Gold|Aluminium|2|12
+q04|Who wrote Romeo and Juliet?|Charles Dickens|Jane Austen|William Shakespeare|Leo Tolstoy|2|15
+q05|What is the largest planet in our solar system?|Saturn|Neptune|Uranus|Jupiter|3|12
+q06|In which year did World War II end?|1943|1944|1946|1945|3|15
+q07|What does CPU stand for?|Core Processing Unit|Central Programming Unit|Central Processing Unit|Computer Power Unit|2|12
+q08|How many continents are on Earth?|5|6|7|8|2|10
+q09|What is the chemical formula for water?|CO2|H2O2|H2O|NaCl|2|10
+q10|How many bits are in a byte?|4|8|16|32|1|10
