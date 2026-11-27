@@ -247,14 +247,15 @@ public class QuizGameEngine implements GameEngine {
             // wrong answer: latency still recorded, 0 points added
         }
 
-        // Broadcast round outcome
-        listener.broadcast(new Message("ROUND_END", current.id(), correctLetter));
+        // Broadcast round outcome — RESULT|questionId|correctLetter
+        listener.broadcast(new Message("RESULT", current.id(), correctLetter));
 
-        // Broadcast leaderboard as "name:score" entries
-        String[] board = getRanking().stream()
+        // Broadcast scores as a single comma-joined field — SCORES|alice:1850,bob:900,...
+        String scoreField = getRanking().stream()
             .map(e -> e.getKey() + ":" + e.getValue())
-            .toArray(String[]::new);
-        listener.broadcast(new Message("LEADERBOARD", board));
+            .reduce((a, b) -> a + "," + b)
+            .orElse("");
+        listener.broadcast(new Message("SCORES", scoreField));
 
         state       = State.REVEAL;
         revealUntil = lastTickMs + REVEAL_MS;
@@ -276,17 +277,12 @@ public class QuizGameEngine implements GameEngine {
     /**
      * Broadcast the final standings.
      *
-     * <p>Protocol message: {@code FINAL|name:score|…|WINNER|winnerName}
+     * <p>Protocol message: {@code END|winnerName}
      */
     private void broadcastFinal() {
         List<Map.Entry<String, Integer>> ranking = getRanking();
-        List<String> fields = new ArrayList<>();
-        for (Map.Entry<String, Integer> e : ranking) {
-            fields.add(e.getKey() + ":" + e.getValue());
-        }
-        fields.add("WINNER");
-        fields.add(ranking.isEmpty() ? "none" : ranking.get(0).getKey());
-        listener.broadcast(new Message("FINAL", fields.toArray(String[]::new)));
+        String winner = ranking.isEmpty() ? "none" : ranking.get(0).getKey();
+        listener.broadcast(new Message("END", winner));
     }
 
     private static String indexToLetter(int i) {
