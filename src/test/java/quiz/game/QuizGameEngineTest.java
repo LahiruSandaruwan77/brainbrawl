@@ -173,7 +173,7 @@ class QuizGameEngineTest {
 
         assertEquals(QuizGameEngine.State.REVEAL, engine.getState(),
             "both answered before deadline → should be in REVEAL");
-        assertEquals(1, listener.ofType("ROUND_END").size());
+        assertEquals(1, listener.ofType("RESULT").size());
     }
 
     // ── Scoring: speed bonus ──────────────────────────────────────────────
@@ -278,11 +278,10 @@ class QuizGameEngineTest {
         e.tick(6_200); // reveal ends → FINISHED
 
         assertEquals(QuizGameEngine.State.FINISHED, e.getState());
-        List<Message> finals = l.ofType("FINAL");
-        assertEquals(1, finals.size(), "exactly one FINAL message");
-        String[] fields = finals.get(0).getFields();
-        assertEquals("WINNER", fields[fields.length - 2]);
-        assertEquals("Solo",   fields[fields.length - 1]);
+        List<Message> ends = l.ofType("END");
+        assertEquals(1, ends.size(), "exactly one END message");
+        String[] fields = ends.get(0).getFields();
+        assertEquals("Solo", fields[0]);
     }
 
     // ── QuestionLoader ────────────────────────────────────────────────────
@@ -367,7 +366,7 @@ class QuizGameEngineTest {
         // --- Q1 ---
         engine.tick(2_000); engine.submitAnswer("Alice", "q1", "B");
         engine.tick(5_000); engine.submitAnswer("Bob",   "q1", "A");  // wrong
-        engine.tick(10_001);  // endRound  → ROUND_END + LEADERBOARD
+        engine.tick(10_001);  // endRound  → RESULT + SCORES
         engine.tick(13_100);  // reveal    → Q2
 
         // --- Q2 ---
@@ -380,32 +379,31 @@ class QuizGameEngineTest {
             .map(Message::getType).toList();
 
         // Expected sequence:
-        // QUESTION(q1) → ROUND_END → LEADERBOARD → QUESTION(q2) → ROUND_END → LEADERBOARD → FINAL
+        // QUESTION(q1) → RESULT → SCORES → QUESTION(q2) → RESULT → SCORES → END
         int q1Idx  = types.indexOf("QUESTION");
-        int r1Idx  = types.indexOf("ROUND_END");
-        int lb1Idx = types.indexOf("LEADERBOARD");
+        int r1Idx  = types.indexOf("RESULT");
+        int sc1Idx = types.indexOf("SCORES");
         int q2Idx  = types.lastIndexOf("QUESTION");
-        int r2Idx  = types.lastIndexOf("ROUND_END");
-        int lb2Idx = types.lastIndexOf("LEADERBOARD");
-        int fiIdx  = types.indexOf("FINAL");
+        int r2Idx  = types.lastIndexOf("RESULT");
+        int sc2Idx = types.lastIndexOf("SCORES");
+        int endIdx = types.indexOf("END");
 
         // Verify strict ordering
-        assertTrue(q1Idx  >= 0,         "must have at least one QUESTION");
-        assertTrue(r1Idx  >  q1Idx,     "ROUND_END must follow QUESTION");
-        assertTrue(lb1Idx >  r1Idx,     "LEADERBOARD must follow ROUND_END");
-        assertTrue(q2Idx  >  lb1Idx,    "second QUESTION must follow first LEADERBOARD");
-        assertTrue(r2Idx  >  q2Idx,     "second ROUND_END must follow second QUESTION");
-        assertTrue(lb2Idx >  r2Idx,     "second LEADERBOARD must follow second ROUND_END");
-        assertTrue(fiIdx  >  lb2Idx,    "FINAL must come after last LEADERBOARD");
+        assertTrue(q1Idx  >= 0,          "must have at least one QUESTION");
+        assertTrue(r1Idx  >  q1Idx,      "RESULT must follow QUESTION");
+        assertTrue(sc1Idx >  r1Idx,      "SCORES must follow RESULT");
+        assertTrue(q2Idx  >  sc1Idx,     "second QUESTION must follow first SCORES");
+        assertTrue(r2Idx  >  q2Idx,      "second RESULT must follow second QUESTION");
+        assertTrue(sc2Idx >  r2Idx,      "second SCORES must follow second RESULT");
+        assertTrue(endIdx >  sc2Idx,     "END must come after last SCORES");
 
-        // Verify no extra QUESTION or FINAL messages
+        // Verify no extra QUESTION or END messages
         assertEquals(2, listener.ofType("QUESTION").size());
-        assertEquals(1, listener.ofType("FINAL").size());
+        assertEquals(1, listener.ofType("END").size());
 
         // Verify winner is Alice (scored more by answering correctly)
-        String[] finalFields = listener.ofType("FINAL").get(0).getFields();
-        assertEquals("WINNER", finalFields[finalFields.length - 2]);
-        assertEquals("Alice",  finalFields[finalFields.length - 1]);
+        String winner = listener.ofType("END").get(0).getFields()[0];
+        assertEquals("Alice", winner);
     }
 
     // ── Edge cases ────────────────────────────────────────────────────────
