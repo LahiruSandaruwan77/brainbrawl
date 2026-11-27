@@ -41,12 +41,36 @@ Member names: _fill in_
 | S -> C | `END\|winner` |
 
 ## Build and run
+Requires JDK 17+ and Maven. Run everything from the project root.
+
 ```
-javac -d out $(find src -name "*.java")
+mvn clean test                      # build + run all tests (engine and server)
+
+mvn compile exec:java               # start the server on port 5050
+mvn compile exec:java -Dexec.args="6000 my-questions.txt"   # optional port and/or question file
+
+mvn javafx:run                      # start a JavaFX client (one per player)
+```
+
+The server loads questions from the file argument if given, otherwise from
+`src/main/resources/questions.txt`, otherwise from `questions.txt` on the classpath.
+
+**Starting a game.** The game starts automatically once at least 2 players have
+joined and 15 s have passed since the first join (`QuizServer.LOBBY_WAIT_MS`).
+You can also type commands in the server console:
+
+| Command  | Effect |
+|---|---|
+| `start`  | start the game now (needs at least 1 player) |
+| `status` | print the game state and lobby |
+| `quit`   | stop the server |
+
+**Without Maven** (server only, no JavaFX needed):
+```
+javac -d out src/main/java/quiz/common/*.java src/main/java/quiz/game/*.java src/main/java/quiz/server/*.java
 java -cp out quiz.server.QuizServer
-java -cp out quiz.client.QuizClient
 ```
-(The JavaFX GUI will need the JavaFX SDK; setup notes to be added.)
+A quick manual test without the GUI: `ncat localhost 5050` (or `telnet`), then type `JOIN|alice`.
 
 ## Git workflow
 - `main` is protected by convention: only Member 1 merges.
