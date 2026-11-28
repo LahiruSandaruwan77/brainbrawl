@@ -24,9 +24,11 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -105,7 +107,7 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
      * broadcast. We close them after the callback returns, so we never call
      * engine.leave() re-entrantly from inside the engine.
      */
-    private final List<ClientSession> pendingCloses = new ArrayList<>();
+    private final Set<ClientSession> pendingCloses = new LinkedHashSet<>();
 
     // ── Thread hand-off and shutdown ──────────────────────────────────────
 
@@ -194,7 +196,7 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
         try {
             if (key.isValid() && key.isAcceptable()) accept();
             if (key.isValid() && key.isReadable())   read(key);
-            if (key.isValid() && key.isWritable())   flush((ClientSession) key.attachment());
+            if (key.isValid() && key.isWritable())   ((ClientSession) key.attachment()).flush();
         } catch (IOException | RuntimeException e) {
             // Anything unexpected from this client: drop the client, keep serving others.
             if (key.attachment() instanceof ClientSession s) {
@@ -215,8 +217,8 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
         client.configureBlocking(false);
         ClientSession session = new ClientSession(client);
         // The session rides along as the key's attachment, so read() can find it.
-        client.register(selector, SelectionKey.OP_READ, session);
-        log("Connection from " + client.getRemoteAddress());
+        session.register(selector);
+        log("Connection from " + session.getRemoteAddress());
     }
 
     // ── OP_READ ───────────────────────────────────────────────────────────
@@ -260,7 +262,7 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
 
         // Buffer completely full and still no '\n' → line is too long. Protect the server.
         if (!buf.hasRemaining()) {
-            disconnect(session, "line longer than " + buf.capacity() + " bytes");
+            disconnect(session, "line longer than " + ClientSession.READ_BUFFER_SIZE + " bytes");
         }
     }
 
@@ -411,6 +413,11 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
                 case "start"  -> startGame("console");
                 case "status" -> {
                     log("State " + engine.getState() + ", players " + sessionsByName.keySet());
+                    for (ClientSession s : sessionsByName.values()) {
+                        log(String.format("  %-20s queued=%d msg / %d B, sent=%d B%s",
+                                s, s.getQueuedMessages(), s.getQueuedBytes(), s.getBytesSent(),
+                                s.hasPendingWrites() ? "  (waiting for OP_WRITE)" : ""));
+                    }
                     printLobbyStatus();
                 }
                 case "quit", "stop" -> stop();
@@ -463,46 +470,23 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
         send(session, new Message(ERROR, reason));
     }
 
-    /** Queue a message for a client and try to write it now. */
-    private void send(ClientSession session, Message m) {
-        if (!session.getChannel().isOpen()) return;
-        ByteBuffer bytes = StandardCharsets.UTF_8.encode(encode(m));
-        session.getWriteQueue().add(bytes);
-        try {
-            flush(session);
-        } catch (IOException e) {
-            // We may be inside an engine callback: close later, not now.
-            pendingCloses.add(session);
-        }
-    }
-
     /**
-     * Write as much of the client's queue as the socket accepts right now.
+     * Queue a message on the client's write queue (Member 4's ClientSession
+     * does the non-blocking write and OP_WRITE handling).
      *
-     * <p>A non-blocking write() may write only PART of a buffer when the
-     * client's TCP send buffer is full (slow client). Then we register
-     * OP_WRITE and the Selector tells us when there is room again. When the
-     * queue is empty we remove OP_WRITE, otherwise select() would wake up
-     * constantly (a socket is almost always writable).
+     * <p>If the write fails, or the client is so slow its queue is full, we
+     * do NOT close it here: we may be inside an engine callback, and closing
+     * calls engine.leave(). It is closed at the end of this loop iteration.
      */
-    // TODO(Member 4): replace with their ClientSession write logic.
-    private void flush(ClientSession session) throws IOException {
-        SelectionKey key = session.getChannel().keyFor(selector);
-        if (key == null || !key.isValid()) return;
-
-        Queue<ByteBuffer> queue = session.getWriteQueue();
-        while (!queue.isEmpty()) {
-            ByteBuffer head = queue.peek();
-            session.getChannel().write(head);
-            if (head.hasRemaining()) {
-                // Socket full: ask the Selector to wake us when it's writable again.
-                key.interestOps(key.interestOps() | SelectionKey.OP_WRITE);
-                return;
+    private void send(ClientSession session, Message m) {
+        if (!session.isOpen() || pendingCloses.contains(session)) return;
+        try {
+            if (!session.enqueue(encode(m))) {
+                pendingCloses.add(session);   // too slow: > MAX_QUEUED_BYTES waiting
             }
-            queue.poll();                       // fully written, next one
+        } catch (IOException e) {
+            pendingCloses.add(session);       // peer reset / broken pipe
         }
-        // Everything sent: stop listening for OP_WRITE.
-        key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
     }
 
     /** TYPE|f1|f2...\n — TODO(Member 2): replace with Message.encode(). */
@@ -518,8 +502,7 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
 
     /** Remove a client cleanly: tell the engine, cancel the key, close the socket. */
     private void disconnect(ClientSession session, String reason) {
-        SocketChannel ch = session.getChannel();
-        if (!ch.isOpen()) return;                       // already done
+        if (!session.isOpen()) return;                  // already done
 
         String name = session.getName();
         if (name != null) {
@@ -527,18 +510,26 @@ public class QuizServer implements GameListener, Runnable, AutoCloseable {
             engine.leave(name);
         }
 
-        SelectionKey key = ch.keyFor(selector);
-        if (key != null) key.cancel();                  // stop watching this channel
-        try { ch.close(); } catch (IOException ignored) { }
+        session.close();                                // cancel key, close socket, drop queue
 
-        log((name != null ? name : "Unjoined client") + " disconnected (" + reason + ").");
+        log((name != null ? name : "Unjoined client " + session.getRemoteAddress())
+                + " disconnected (" + reason + ").");
         if (sessionsByName.isEmpty()) firstJoinAt = -1L; // empty lobby: restart the timer
         if (name != null) printLobbyStatus();
     }
 
+    /**
+     * Close clients whose writes failed. Disconnecting calls engine.leave(),
+     * which can broadcast again and mark more clients, so loop until none are left.
+     */
     private void closePendingClients() {
-        for (ClientSession s : pendingCloses) disconnect(s, "write failed");
-        pendingCloses.clear();
+        while (!pendingCloses.isEmpty()) {
+            List<ClientSession> batch = new ArrayList<>(pendingCloses);
+            pendingCloses.clear();
+            for (ClientSession s : batch) {
+                disconnect(s, s.getQueuedBytes() > 0 ? "too slow / write failed" : "write failed");
+            }
+        }
     }
 
     /** Thread-safe: ask the loop to exit. It wakes the selector so this is immediate. */
