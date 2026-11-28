@@ -221,6 +221,83 @@ class QuizServerTest {
         assertEquals("WELCOME|frank", good.readLine());
     }
 
+    // ── Member 4: reliability ────────────────────────────────────────────
+
+    /**
+     * A client floods requests but never reads the replies. Its write queue
+     * hits MAX_QUEUED_BYTES and the server drops it; a normal client is
+     * unaffected the whole time.
+     */
+    private static final int FLOOD_CHUNKS = 250;
+
+    @Test
+    void clientThatStopsReadingIsDroppedOthersUnaffected() throws Exception {
+        startServer(NO_AUTO_START);
+        TestClient good = connect();
+        TestClient stuck = connect();
+        stuck.socket.setReceiveBufferSize(4096);
+
+        // ~1M bad lines → ~22 MB of "ERROR|unknown command" replies nobody reads.
+        // Must exceed kernel buffers too: macOS auto-grows send buffers up to 4 MB.
+        Thread flooder = new Thread(() -> {
+            byte[] chunk = "X\n".repeat(4096).getBytes(StandardCharsets.UTF_8);
+            try {
+                for (int i = 0; i < FLOOD_CHUNKS; i++) stuck.out.write(chunk);
+                stuck.out.flush();
+            } catch (IOException expected) {
+                // the server hung up on us: that's the point
+            }
+        }, "flooder");
+        flooder.setDaemon(true);
+        flooder.start();
+
+        good.send("JOIN|grace");
+        assertEquals("WELCOME|grace", good.readLine());
+
+        // Don't read yet: wait until the flood is over, so the client really is stuck.
+        flooder.join(10_000);
+        assertFalse(flooder.isAlive(), "flooder should finish or be cut off");
+
+        // Now drain what reached it: far fewer replies than requests, then EOF/reset.
+        int sentLines = FLOOD_CHUNKS * 4096;
+        int lines = 0;
+        String l;
+        while ((l = stuck.readLine()) != null) {
+            assertEquals("ERROR|unknown command", l);
+            lines++;
+        }
+        assertTrue(lines < sentLines, "server should have dropped the stuck client early, got " + lines);
+
+        good.send("NONSENSE");
+        assertEquals("ERROR|unknown command", good.readLine(), "good client still served");
+    }
+
+    /** A player vanishes (RST) mid-question; the round still ends and the game finishes. */
+    @Test
+    void playerDroppingMidQuestionDoesNotStallTheGame() throws Exception {
+        startServer(NO_AUTO_START);
+        TestClient alice = connect();
+        TestClient bob = connect();
+        alice.send("JOIN|alice");
+        assertEquals("WELCOME|alice", alice.readLine());
+        bob.send("JOIN|bob");
+        assertEquals("WELCOME|bob", bob.readLine());
+
+        server.submitConsoleCommand("start");
+        assertTrue(alice.readLine().startsWith("QUESTION|q1|"));
+        assertTrue(bob.readLine().startsWith("QUESTION|q1|"));
+
+        bob.socket.setSoLinger(true, 0);              // close() sends RST, like a crash
+        bob.close();
+
+        alice.send("ANSWER|q1|B");
+        assertEquals("RESULT|q1|B", alice.readLine());
+        String scores = alice.readLine();
+        assertTrue(scores.startsWith("SCORES|alice:"), scores);
+        assertFalse(scores.contains("bob"), "bob left, so he is off the leaderboard: " + scores);
+        assertEquals("END|alice", alice.readLine());
+    }
+
     // ── tiny blocking test client ─────────────────────────────────────────
 
     private static final class TestClient implements AutoCloseable {
